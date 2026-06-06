@@ -41,6 +41,22 @@ Pega una URL como `https://arbitrum-sepolia.blockscout.com/token/0x…` y pulsa 
 Desde el visor puedes **descargar el HTML** (archivo autocontenido) o **abrirlo en una pestaña** para
 imprimir a PDF (Cmd/Ctrl + P).
 
+## Despliegue (GitHub Pages)
+
+En vivo: **https://miguelschneider.github.io/human-readable-transactions/**
+
+El sitio es estático y se sirve desde la rama `gh-pages` (modo "deploy from branch"). El
+`vite.config.ts` aplica `base: "/human-readable-transactions/"` solo en `build` (el `dev` sigue en
+la raíz). Para volver a desplegar tras un cambio:
+
+```bash
+npm run deploy
+```
+
+Esto reconstruye y publica `dist/` en `gh-pages` (con un `.nojekyll`). Pages tarda ~30-60 s en
+reconstruir. Si renombras el repo, actualiza `REPO` en `vite.config.ts` y las URLs en
+`scripts/deploy.sh`.
+
 ## Añadir una cadena
 
 Agrega una fila en `src/explorer/chains.ts` (id, nombre, `backend`, base de Blockscout o API de

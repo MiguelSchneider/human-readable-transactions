@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "smoke": "vite-node scripts/smoke.ts"
+    "smoke": "vite-node scripts/smoke.ts",
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "react": "^18.3.1",
