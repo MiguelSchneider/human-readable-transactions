@@ -299,6 +299,7 @@ export function buildReportModel(data: ExtractedData, chain: ChainDef, now: Date
   const sampleSell = sells.find((o) => !o.paymentMissing && o.fee != null) ?? sells[0];
 
   return {
+    chainKind: "evm",
     token: {
       address: data.token.address,
       name: data.token.name,
@@ -308,6 +309,7 @@ export function buildReportModel(data: ExtractedData, chain: ChainDef, now: Date
       totalSupplyRaw: data.token.totalSupply,
       holders: data.token.holders,
       type: data.token.type,
+      standard: data.token.type ?? "ERC-20",
     },
     chainName: chain.name,
     testnet: chain.testnet,

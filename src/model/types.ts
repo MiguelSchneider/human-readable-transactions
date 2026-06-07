@@ -6,7 +6,7 @@ export interface Party {
 }
 
 export interface Leg {
-  role: "pay" | "fee" | "net" | "share" | "mint";
+  role: "pay" | "fee" | "net" | "share" | "mint" | "burn";
   from: string;
   to: string;
   amount: number; // human units
@@ -15,7 +15,7 @@ export interface Leg {
   decimals: number;
 }
 
-export type OpKind = "buy" | "sell" | "mint";
+export type OpKind = "buy" | "sell" | "mint" | "burn" | "transfer" | "dividend" | "setup";
 
 export interface Operation {
   n: number; // 1-based, in display order (newest first)
@@ -38,6 +38,8 @@ export interface Operation {
   treasury?: string | null;
   // True when we could not retrieve the payment/fee legs for this trade.
   paymentMissing?: boolean;
+  // Solana: programs touched (trade program, AMM…), already friendly-labelled.
+  programs?: string[];
 }
 
 export interface PaymentToken {
@@ -63,6 +65,7 @@ export interface FeeModel {
 }
 
 export interface ReportModel {
+  chainKind: "evm" | "solana";
   token: {
     address: string;
     name: string;
@@ -72,10 +75,13 @@ export interface ReportModel {
     totalSupplyRaw: string;
     holders: number | null;
     type: string | null;
+    standard?: string; // ERC-20 | Token-2022 | SPL Token
+    extensions?: string[]; // Token-2022 powers (human strings)
   };
   chainName: string;
   testnet: boolean;
   explorerBase: string;
+  explorerQuery?: string; // e.g. "?cluster=devnet" for Solana
   sourceLabel: string;
   dataAsOf: string; // ISO date the report was generated
   transferCount: number | null;

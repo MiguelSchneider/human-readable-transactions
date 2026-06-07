@@ -57,3 +57,18 @@ export function whenLabel(timestamp: string | null, block: number | null): strin
   if (block != null) return `block ${block}`;
   return "—";
 }
+
+// Explorer links that work for both EVM (etherscan/blockscout) and Solana
+// (explorer.solana.com with a ?cluster= suffix). Paths are the same: /tx/ and /address/.
+export function txUrl(m: ReportModel, hash: string): string {
+  return `${m.explorerBase.replace(/\/$/, "")}/tx/${hash}${m.explorerQuery ?? ""}`;
+}
+export function addrUrl(m: ReportModel, addr: string): string {
+  return `${m.explorerBase.replace(/\/$/, "")}/address/${addr}${m.explorerQuery ?? ""}`;
+}
+
+// Block vs slot label depending on chain.
+export function refLabel(m: ReportModel, block: number | null): string {
+  if (block == null) return "";
+  return m.chainKind === "solana" ? `slot ${block}` : `block ${block}`;
+}

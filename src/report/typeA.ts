@@ -1,7 +1,7 @@
 import type { Operation, ReportModel } from "@/model/types";
 import { CSS_TYPE_A, FONT_LINKS } from "./designSystem";
-import { escapeHtml, fmtAmount, fmtDateShort, shortAddr, whenLabel } from "./format";
-import { explorerTxUrl } from "@/explorer/chains";
+import { escapeHtml, fmtAmount, fmtDateShort, shortAddr, txUrl, whenLabel } from "./format";
+import { extensionLabel } from "@/explorer/solanaRegistry";
 
 function paySym(m: ReportModel): string {
   return m.paymentToken?.symbol ?? "the payment token";
@@ -18,8 +18,27 @@ function feePct(m: ReportModel): string {
 function netPct(m: ReportModel): string {
   return hasFee(m) ? `${trimPct(100 - m.fee.fractionPct!)}%` : "the remainder";
 }
-function chainHack(m: ReportModel) {
-  return { explorer: m.explorerBase } as any;
+// Display an endpoint: Solana sentinels (new supply / burned) become words; else short hash.
+function dispAddr(a: string | null | undefined): string {
+  if (!a || a === "—") return "—";
+  if (a.startsWith("—")) {
+    const w = a.replace(/—/g, "").trim();
+    return w === "new supply" ? "New supply" : w === "burned" ? "Burned" : w;
+  }
+  return shortAddr(a);
+}
+
+function tagLabel(kind: string): string {
+  switch (kind) {
+    case "buy": return "Buy";
+    case "sell": return "Sell";
+    case "mint": return "Mint";
+    case "dividend": return "Dividend";
+    case "burn": return "Burn";
+    case "transfer": return "Transfer";
+    case "setup": return "Setup";
+    default: return kind;
+  }
 }
 
 // ---------- SVG diagrams (orthogonal arrows + polygon arrowheads, per design-system) ----------
@@ -177,7 +196,7 @@ function movementTable(op: Operation): string {
       const move =
         leg.role === "pay" ? "Payment" : leg.role === "fee" ? "Fee" : leg.role === "net" ? "Proceeds" : leg.role === "share" ? "Asset" : "Mint";
       const unit = leg.symbol;
-      return `        <tr><td>${escapeHtml(move)}</td><td class="mono">${escapeHtml(shortAddr(leg.from))}</td><td class="mono">${escapeHtml(shortAddr(leg.to))}</td><td class="num">${fmtAmount(leg.amount)} ${escapeHtml(unit)}</td></tr>`;
+      return `        <tr><td>${escapeHtml(move)}</td><td class="mono">${escapeHtml(dispAddr(leg.from))}</td><td class="mono">${escapeHtml(dispAddr(leg.to))}</td><td class="num">${fmtAmount(leg.amount)} ${escapeHtml(unit)}</td></tr>`;
     })
     .join("\n");
   return `    <div class="scroll"><table>
@@ -212,7 +231,7 @@ function ledgerTable(m: ReportModel): string {
     .slice(0, 400)
     .map(
       (r) =>
-        `        <tr><td>${r.n}</td><td><span class="tag ${r.kind}">${r.kind === "buy" ? "Buy" : r.kind === "sell" ? "Sell" : "Mint"}</span></td><td class="mono">${escapeHtml(shortAddr(r.from))}</td><td class="mono">${escapeHtml(shortAddr(r.to))}</td><td class="num">${fmtAmount(r.qty)}</td><td class="mono"><a href="${explorerTxUrl(chainHack(m), r.txHash)}" target="_blank" rel="noopener">${escapeHtml(shortAddr(r.txHash))}</a></td></tr>`,
+        `        <tr><td>${r.n}</td><td><span class="tag ${r.kind}">${tagLabel(r.kind)}</span></td><td class="mono">${escapeHtml(dispAddr(r.from))}</td><td class="mono">${escapeHtml(dispAddr(r.to))}</td><td class="num">${fmtAmount(r.qty)}</td><td class="mono"><a href="${txUrl(m, r.txHash)}" target="_blank" rel="noopener">${escapeHtml(shortAddr(r.txHash))}</a></td></tr>`,
     )
     .join("\n");
   return `    <div class="scroll"><table>
@@ -245,17 +264,24 @@ export function renderTypeA(m: ReportModel): string {
   const buy = m.sampleBuy;
   const sell = m.sampleSell;
 
+  const progsLine = (op?: Operation) =>
+    m.chainKind === "solana" && op?.programs && op.programs.length
+      ? `    <p class="note">Programs in this transaction: ${op.programs.map((p) => `<span class="prog">${escapeHtml(p)}</span>`).join(" ")}</p>`
+      : "";
+
   const buySection = buy
     ? `${buyDiagram(m, buy)}
 ${buySteps(m, buy)}
 ${movementTable(buy)}
+${progsLine(buy)}
     <div class="callout"><b>The key:</b> the payment, the fee and the ${sym} delivery all happen inside one transaction. There is no moment where the investor has paid but not received the asset — it settles atomically or not at all.</div>`
     : `<div class="callout">No buy transactions were found in the retrieved history, so a worked buy example isn't shown.</div>`;
 
   const sellSection = sell
     ? `${sellDiagram(m, sell)}
 ${sellSteps(m, sell)}
-${movementTable(sell)}`
+${movementTable(sell)}
+${progsLine(sell)}`
     : `<div class="callout">No sell / redemption transactions were found in the retrieved history.</div>`;
 
   const hadPaymentLegs = m.buys.concat(m.sells).some((o) => !o.paymentMissing);
@@ -307,6 +333,7 @@ ${FONT_LINKS}
     <div class="grid g-2" style="margin-top:18px">
 ${vocabularyCards(m)}
     </div>
+    ${m.chainKind === "solana" ? `<div class="callout" style="margin-top:20px;border-left-color:var(--violet);background:rgba(91,75,138,.07)"><b>Why Solana looks different:</b> balances live in <em>token accounts</em> owned by wallets, and one transaction can chain several <span class="prog">programs</span> (a trade program calling an AMM via CPI). We read each transaction's net balance changes, so the money flow is exact no matter how many programs are involved. ${m.token.standard === "Token-2022" ? "This asset is a <b>Token-2022</b> token, whose extensions add compliance powers (see the asset spec) and explain the many setup/config transactions." : ""}</div>` : ""}
     ${m.testnet ? `<div class="callout" style="margin-top:20px"><b>Important:</b> this is testnet data (${escapeHtml(m.chainName)}). Amounts and prices are for testing and do not represent real money.</div>` : ""}
   </section>
 
@@ -322,15 +349,16 @@ ${castRows(m)}
   <section>
     <div class="sec-num">03 · The asset</div>
     <h2>The token at a glance</h2>
-    <p>The supply was created by minting ${sym} from the zero address to the treasury, then distributed through trades.</p>
+    <p>${m.chainKind === "solana" ? `The supply was minted by the issuer (mint authority) and distributed from there.` : `The supply was created by minting ${sym} from the zero address to the treasury, then distributed through trades.`}</p>
     <div class="spec" style="margin-top:18px">
       <div><div class="lab">Name</div><div class="val">${escapeHtml(m.token.name)}</div></div>
       <div><div class="lab">Symbol</div><div class="val">${sym}</div></div>
       <div><div class="lab">Total supply</div><div class="val">${fmtAmount(m.token.totalSupply)}</div></div>
-      <div><div class="lab">Holders</div><div class="val">${m.token.holders != null ? m.token.holders : "—"}</div></div>
-      <div><div class="lab">Recorded operations</div><div class="val">${m.transferCount != null ? m.transferCount : m.ledger.length} transfers</div></div>
+      <div><div class="lab">Standard</div><div class="val">${escapeHtml(m.token.standard ?? m.token.type ?? "—")}</div></div>
+      <div><div class="lab">${m.chainKind === "solana" ? "Signatures sampled" : "Recorded operations"}</div><div class="val">${m.transferCount != null ? m.transferCount : m.ledger.length}</div></div>
       <div><div class="lab">Decimals</div><div class="val">${m.token.decimals}</div></div>
-      <div style="grid-column:1/-1"><div class="lab">Token contract address</div><div class="val mono">${escapeHtml(m.token.address)}</div></div>
+      <div style="grid-column:1/-1"><div class="lab">${m.chainKind === "solana" ? "Mint address" : "Token contract address"}</div><div class="val mono">${escapeHtml(m.token.address)}</div></div>
+      ${m.token.extensions && m.token.extensions.length ? `<div style="grid-column:1/-1"><div class="lab">Token-2022 extensions</div><div class="val mono">${m.token.extensions.map((e) => escapeHtml(extensionLabel(e))).join("<br>")}</div></div>` : ""}
     </div>
   </section>
 

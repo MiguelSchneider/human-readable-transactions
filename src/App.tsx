@@ -1,20 +1,24 @@
 import { useMemo, useRef, useState } from "react";
-import { parseExplorerInput, SUPPORTED_CHAINS } from "@/explorer/parseUrl";
-import type { ChainDef } from "@/explorer/chains";
+import { parseExplorerInput, SUPPORTED_CHAINS, type Target } from "@/explorer/parseUrl";
 import type { Progress } from "@/explorer/types";
+import type { SolanaCluster } from "@/explorer/solanaRegistry";
 import { generateReport, type GeneratedReport } from "@/generate";
 
 const EXAMPLES = [
   "https://arbitrum-sepolia.blockscout.com/token/0x…",
-  "https://sepolia.arbiscan.io/token/0x…",
   "https://testnet.snowtrace.io/token/0x… (Avalanche Fuji)",
+  "https://explorer.solana.com/address/<mint>?cluster=devnet (Solana)",
 ];
+
+const CLUSTERS: SolanaCluster[] = ["mainnet-beta", "devnet", "testnet"];
+
+type Pending = { kind: "evm" | "solana"; address: string };
 
 export function App() {
   const [input, setInput] = useState("");
   const [chainId, setChainId] = useState<number>(SUPPORTED_CHAINS[0].id);
-  const [needChain, setNeedChain] = useState(false);
-  const [pendingAddress, setPendingAddress] = useState<string | null>(null);
+  const [cluster, setCluster] = useState<SolanaCluster>("mainnet-beta");
+  const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,9 +26,7 @@ export function App() {
   const [tab, setTab] = useState<"B" | "A">("B");
   const abortRef = useRef<AbortController | null>(null);
 
-  const chainById = (id: number): ChainDef => SUPPORTED_CHAINS.find((c) => c.id === id)!;
-
-  async function run(chain: ChainDef, address: string) {
+  async function run(target: Target) {
     setError(null);
     setResult(null);
     setProgress({ phase: "Starting" });
@@ -32,17 +34,13 @@ export function App() {
     const ac = new AbortController();
     abortRef.current = ac;
     try {
-      const r = await generateReport(chain, address, setProgress, ac.signal);
+      const r = await generateReport(target, setProgress, ac.signal);
       setResult(r);
       setTab("B");
       setProgress(null);
     } catch (e: any) {
-      if (e?.name === "AbortError") {
-        setProgress(null);
-      } else {
-        setError(e?.message ?? String(e));
-        setProgress(null);
-      }
+      if (e?.name !== "AbortError") setError(e?.message ?? String(e));
+      setProgress(null);
     } finally {
       setBusy(false);
       abortRef.current = null;
@@ -52,22 +50,26 @@ export function App() {
   function onGenerate() {
     const parsed = parseExplorerInput(input);
     if (parsed.ok && parsed.target) {
-      setNeedChain(false);
-      setPendingAddress(null);
-      void run(parsed.target.chain, parsed.target.tokenAddress);
+      setPending(null);
+      void run(parsed.target);
       return;
     }
     if (parsed.addressOnly) {
-      setNeedChain(true);
-      setPendingAddress(parsed.addressOnly);
-      setError(parsed.error ?? "Pick the network for this address.");
+      setPending(parsed.addressOnly);
+      setError(parsed.error ?? "Pick the network.");
       return;
     }
     setError(parsed.error ?? "Invalid input.");
   }
 
-  function onConfirmChain() {
-    if (pendingAddress) void run(chainById(chainId), pendingAddress);
+  function onConfirm() {
+    if (!pending) return;
+    if (pending.kind === "evm") {
+      const chain = SUPPORTED_CHAINS.find((c) => c.id === chainId)!;
+      void run({ kind: "evm", chain, address: pending.address });
+    } else {
+      void run({ kind: "solana", cluster, address: pending.address });
+    }
   }
 
   function onCancel() {
@@ -89,10 +91,10 @@ export function App() {
           {m.testnet ? " (testnet)" : ""}
         </span>
         <span>
-          <b>Source:</b> {m.sourceLabel}
+          <b>Standard:</b> {m.token.standard ?? "—"}
         </span>
         <span>
-          <b>Transfers:</b> {m.transferCount ?? m.ledger.length}
+          <b>Source:</b> {m.sourceLabel}
         </span>
         <span>
           <b>Buys/Sells/Issuances:</b> {m.buys.length}/{m.sells.length}/{m.mints.length}
@@ -141,27 +143,28 @@ export function App() {
           From an explorer URL to a <em>human-readable report</em>
         </h1>
         <p>
-          Paste a token's URL from a block explorer (Blockscout, Arbiscan, Snowtrace…) and get the same report the
-          skill produces: issuances, buys and sells are classified, the wallets are identified, the fee model is derived
-          and every transaction's flow is shown. Everything runs in your browser — no keys, no backend.
+          Paste a token's URL from a block explorer — EVM (Blockscout, Arbiscan, Snowtrace…) or Solana
+          (explorer.solana.com, Solscan) — and get the same report the skill produces: issuances, buys and sells are
+          classified, the wallets are identified, the fee model is derived and every transaction's flow is shown.
+          Everything runs in your browser — no keys, no backend.
         </p>
       </header>
 
       <div className="panel">
         <label className="field-label" htmlFor="url">
-          Explorer URL or token address
+          Explorer URL or token address (EVM or Solana)
         </label>
         <div className="row">
           <input
             id="url"
             type="text"
-            placeholder="https://arbitrum-sepolia.blockscout.com/token/0x…  ·  or a plain 0x address"
+            placeholder="https://…/token/0x…  ·  explorer.solana.com/address/<mint>?cluster=devnet  ·  or a bare address"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !busy && onGenerate()}
             disabled={busy}
           />
-          {needChain && (
+          {pending?.kind === "evm" && (
             <select value={chainId} onChange={(e) => setChainId(Number(e.target.value))} disabled={busy}>
               {SUPPORTED_CHAINS.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -171,14 +174,23 @@ export function App() {
               ))}
             </select>
           )}
-          {!busy && !needChain && (
+          {pending?.kind === "solana" && (
+            <select value={cluster} onChange={(e) => setCluster(e.target.value as SolanaCluster)} disabled={busy}>
+              {CLUSTERS.map((c) => (
+                <option key={c} value={c}>
+                  Solana {c}
+                </option>
+              ))}
+            </select>
+          )}
+          {!busy && !pending && (
             <button className="primary" onClick={onGenerate}>
               Generate report
             </button>
           )}
-          {!busy && needChain && (
-            <button className="primary" onClick={onConfirmChain}>
-              Generate on {chainById(chainId).name}
+          {!busy && pending && (
+            <button className="primary" onClick={onConfirm}>
+              Generate
             </button>
           )}
           {busy && (
@@ -188,8 +200,8 @@ export function App() {
           )}
         </div>
         <p className="hint">
-          Supported networks: {SUPPORTED_CHAINS.map((c) => c.name).join(", ")}. Avalanche uses Routescan + RPC; the rest
-          use the Blockscout v2 API. Example formats:
+          EVM: {SUPPORTED_CHAINS.map((c) => c.name).join(", ")} (Blockscout v2 / Routescan). Solana: mainnet-beta,
+          devnet, testnet (JSON-RPC, incl. Token-2022). Example formats:
         </p>
         <div className="examples">
           {EXAMPLES.map((ex) => (
@@ -206,10 +218,7 @@ export function App() {
               <span>{progress.total ? `${progress.current ?? 0} / ${progress.total}` : progress.current ? `${progress.current}` : ""}</span>
             </div>
             <div className="bar">
-              <div
-                className={`fill${indeterminate ? " indeterminate" : ""}`}
-                style={indeterminate ? undefined : { width: `${pct}%` }}
-              />
+              <div className={`fill${indeterminate ? " indeterminate" : ""}`} style={indeterminate ? undefined : { width: `${pct}%` }} />
             </div>
           </div>
         )}

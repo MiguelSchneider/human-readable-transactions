@@ -1,7 +1,6 @@
-import type { Leg, Operation, ReportModel } from "@/model/types";
+import type { Leg, Operation, OpKind, ReportModel } from "@/model/types";
 import { CSS_TYPE_B, FONT_LINKS } from "./designSystem";
-import { escapeHtml, fmtAmount, labelled, shortAddr, whenLabel } from "./format";
-import { explorerTxUrl } from "@/explorer/chains";
+import { escapeHtml, fmtAmount, labelled, refLabel, shortAddr, txUrl, whenLabel } from "./format";
 
 function paySym(m: ReportModel): string {
   return m.paymentToken?.symbol ?? "tokens";
@@ -32,6 +31,8 @@ function roleLabel(leg: Leg, m: ReportModel): string {
       return "Asset";
     case "mint":
       return "Mint";
+    case "burn":
+      return "Burn";
   }
 }
 
@@ -41,34 +42,54 @@ function amtClass(leg: Leg): string {
   return "asset";
 }
 
+// Render an endpoint cell: zero address, a Solana sentinel (new supply / burned), or a labelled wallet.
+function cell(m: ReportModel, addr: string): string {
+  if (!addr || addr === "—") return "—";
+  if (/^0x0+$/.test(addr.toLowerCase())) return `Zero address <span class="addr">0x000…000</span>`;
+  if (addr.startsWith("—")) return escapeHtml(m.labelOf[addr] ?? addr.replace(/—/g, "").trim());
+  return labelled(m, addr);
+}
+
 function movementRows(op: Operation, m: ReportModel): string {
   return op.legs
     .map((leg) => {
-      const from = leg.from && /^0x0+$/.test(leg.from.toLowerCase()) ? `Zero address <span class="addr">0x000…000</span>` : labelled(m, leg.from);
-      const to = labelled(m, leg.to);
-      const unit = leg.role === "share" || leg.role === "mint" ? escapeHtml(leg.symbol) : escapeHtml(leg.symbol);
-      return `        <tr><td><span class="rl ${leg.role}">${escapeHtml(roleLabel(leg, m))}</span></td><td class="mn">${from}</td><td class="arrow">→</td><td class="mn">${to}</td><td class="amt ${amtClass(leg)}">${fmtAmount(leg.amount)} ${unit}</td></tr>`;
+      const unit = escapeHtml(leg.symbol);
+      return `        <tr><td><span class="rl ${leg.role}">${escapeHtml(roleLabel(leg, m))}</span></td><td class="mn">${cell(m, leg.from)}</td><td class="arrow">→</td><td class="mn">${cell(m, leg.to)}</td><td class="amt ${amtClass(leg)}">${fmtAmount(leg.amount)} ${unit}</td></tr>`;
     })
     .join("\n");
 }
+
+const BADGE: Record<OpKind, string> = {
+  buy: "Buy",
+  sell: "Sell",
+  mint: "Issuance",
+  dividend: "Dividend",
+  burn: "Redemption",
+  transfer: "Transfer",
+  setup: "Setup",
+};
 
 function title(op: Operation, m: ReportModel): string {
   const sym = escapeHtml(m.token.symbol);
   const inv = op.investor ? plainLabel(m, op.investor) : "Investor";
   const qty = fmtAmount(op.assetQty);
   const ps = escapeHtml(paySym(m));
-  if (op.kind === "mint") {
-    const rec = op.recipient ? plainLabel(m, op.recipient) : "recipient";
-    return `${qty} ${sym} minted to ${escapeHtml(rec)}`;
+  switch (op.kind) {
+    case "mint":
+      return `${qty} ${sym} minted to ${escapeHtml(op.recipient ? plainLabel(m, op.recipient) : "recipient")}`;
+    case "dividend":
+      return `${qty} ${sym} distributed (dividend)`;
+    case "burn":
+      return `${qty} ${sym} redeemed / burned`;
+    case "transfer":
+      return op.method === "provisioning (seeding)" ? `Provisioning: ${qty} ${sym} (+ ${ps}) seeded` : `${qty} ${sym} transferred to ${escapeHtml(inv)}`;
+    case "setup":
+      return `Compliance / setup${op.method ? ` · ${escapeHtml(op.method)}` : ""}`;
+    case "buy":
+      return op.gross != null ? `${escapeHtml(inv)} buys ${qty} ${sym} for ${fmtAmount(op.gross)} ${ps}` : `${escapeHtml(inv)} buys ${qty} ${sym}`;
+    case "sell":
+      return op.gross != null ? `${escapeHtml(inv)} sells ${qty} ${sym} back for ${fmtAmount(op.gross)} ${ps}` : `${escapeHtml(inv)} sells ${qty} ${sym}`;
   }
-  if (op.kind === "buy") {
-    return op.gross != null
-      ? `${escapeHtml(inv)} buys ${qty} ${sym} for ${fmtAmount(op.gross)} ${ps}`
-      : `${escapeHtml(inv)} buys ${qty} ${sym}`;
-  }
-  return op.gross != null
-    ? `${escapeHtml(inv)} sells ${qty} ${sym} back for ${fmtAmount(op.gross)} ${ps}`
-    : `${escapeHtml(inv)} sells ${qty} ${sym}`;
 }
 
 function plainLabel(m: ReportModel, addr: string): string {
@@ -78,8 +99,23 @@ function plainLabel(m: ReportModel, addr: string): string {
 function narrative(op: Operation, m: ReportModel): string {
   const sym = escapeHtml(m.token.symbol);
   const ps = escapeHtml(paySym(m));
+  const source = m.chainKind === "solana" ? "by the mint authority" : "directly from the zero address";
   if (op.kind === "mint") {
-    return `New <b>${sym}</b> is created directly from the zero address and delivered to the recipient. There is no payment and no fee — this is pure issuance that increases the circulating supply.`;
+    return `New <b>${sym}</b> is created ${source} and delivered to the recipient. There is no payment and no fee — this is pure issuance that increases the circulating supply.`;
+  }
+  if (op.kind === "dividend") {
+    return `New <b>${sym}</b> is minted to several holders at once — a distribution/dividend. No payment token moves; the circulating supply increases.`;
+  }
+  if (op.kind === "burn") {
+    return `<b>${fmtAmount(op.assetQty)} ${sym}</b> is destroyed (redeemed/burned), reducing the circulating supply. No payment leg is involved on-chain.`;
+  }
+  if (op.kind === "transfer") {
+    return op.method === "provisioning (seeding)"
+      ? `One wallet seeds another with both <b>${sym}</b> and ${ps} — funding/provisioning, <b>not</b> a trade (there is no fee leg).`
+      : `<b>${fmtAmount(op.assetQty)} ${sym}</b> moves between two wallets, with no payment token and no fee — a plain transfer.`;
+  }
+  if (op.kind === "setup") {
+    return `A configuration / compliance transaction (e.g. thaw, freeze, approve, or pause) that references the token but moves no balances. Common on permissioned Token-2022 assets.`;
   }
   if (op.paymentMissing) {
     return op.kind === "buy"
@@ -100,34 +136,37 @@ function narrative(op: Operation, m: ReportModel): string {
 }
 
 function opCard(op: Operation, m: ReportModel): string {
-  const badge = op.kind === "mint" ? "Issuance" : op.kind === "buy" ? "Buy" : "Sell";
+  const badge = BADGE[op.kind];
   const when = whenLabel(op.timestamp, op.block);
-  const blockLine = op.block != null ? `block ${op.block}` : "";
+  const ref = refLabel(m, op.block);
   const foot: string[] = [];
-  if (op.method) foot.push(`<span><b>Method:</b> ${escapeHtml(op.method)}</span>`);
+  if (op.method && op.kind !== "setup") foot.push(`<span><b>Method:</b> ${escapeHtml(op.method)}</span>`);
   if (op.impliedPrice != null) foot.push(`<span><b>Implied price:</b> ${fmtAmount(op.impliedPrice)} ${escapeHtml(paySym(m))}/${escapeHtml(m.token.symbol)}</span>`);
-  foot.push(`<span><b>tx:</b> <a href="${explorerTxUrl(chainHack(m), op.txHash)}" target="_blank" rel="noopener">${shortAddr(op.txHash)}</a></span>`);
+  foot.push(`<span><b>tx:</b> <a href="${txUrl(m, op.txHash)}" target="_blank" rel="noopener">${shortAddr(op.txHash)}</a></span>`);
+
+  const progs =
+    m.chainKind === "solana" && op.programs && op.programs.length
+      ? `      <div class="op-progs"><span class="lbl">Programs</span>${op.programs.map((p) => `<span class="prog">${escapeHtml(p)}</span>`).join("")}</div>\n`
+      : "";
+
+  const table = op.legs.length
+    ? `      <table class="mv">
+        <tr><th>Role</th><th>From</th><th></th><th>To</th><th style="text-align:right">Amount</th></tr>
+${movementRows(op, m)}
+      </table>\n`
+    : "";
 
   return `  <div class="op ${op.kind}">
     <div class="op-head">
       <div class="opnum">${op.n}</div>
       <div class="h"><span class="badge ${op.kind}">${badge}</span><div class="op-title">${title(op, m)}</div></div>
-      <div class="op-when">${escapeHtml(when)}${blockLine ? `<br>${blockLine}` : ""}</div>
+      <div class="op-when">${escapeHtml(when)}${ref ? `<br>${ref}` : ""}</div>
     </div>
     <div class="op-body">
       <p class="op-narr">${narrative(op, m)}</p>
-      <table class="mv">
-        <tr><th>Role</th><th>From</th><th></th><th>To</th><th style="text-align:right">Amount</th></tr>
-${movementRows(op, m)}
-      </table>
-      <div class="op-foot">${foot.join("")}</div>
+${progs}${table}      <div class="op-foot">${foot.join("")}</div>
     </div>
   </div>`;
-}
-
-// The model carries explorerBase; rebuild a minimal ChainDef-like object for link helpers.
-function chainHack(m: ReportModel) {
-  return { explorer: m.explorerBase } as any;
 }
 
 export function renderTypeB(m: ReportModel): string {
@@ -151,12 +190,22 @@ ${[...m.buys, ...m.sells]
           .join("\n")}`
       : "";
 
+  const issuanceSource = m.chainKind === "solana" ? "minted by the issuer" : "created from the zero address";
   const mintsSection =
     m.mints.length > 0
       ? `  <div class="sect-label">Issuances</div>
   <div class="sect-h">The creation events</div>
-  <p class="sect-p">No payment, no fee — pure creation from the zero address.</p>
+  <p class="sect-p">No payment, no fee — supply ${issuanceSource}.</p>
 ${m.mints.map((op) => opCard(op, m)).join("\n")}`
+      : "";
+
+  const others = m.operations.filter((o) => o.kind === "burn" || o.kind === "transfer" || o.kind === "setup");
+  const otherSection =
+    others.length > 0
+      ? `  <div class="sect-label">Other activity</div>
+  <div class="sect-h">Transfers, redemptions &amp; setup</div>
+  <p class="sect-p">${others.length} transaction${others.length === 1 ? "" : "s"} that aren't trades — plain transfers, burns, and (on permissioned tokens) compliance/config calls.</p>
+${others.map((op) => opCard(op, m)).join("\n")}`
       : "";
 
   const players = buildPlayers(m);
@@ -196,6 +245,8 @@ ${FONT_LINKS}
 ${tradesSection}
 
 ${mintsSection}
+
+${otherSection}
 
   <footer>
     <p><b>Players referenced:</b> ${players}</p>
